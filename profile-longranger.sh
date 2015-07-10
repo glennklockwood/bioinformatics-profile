@@ -64,6 +64,10 @@ startmon() {
     if [ -e $PROFILE_OUTPUT_DIR/prof_ps.txt ]; then
         rm $PROFILE_OUTPUT_DIR/prof_ps.txt
     fi
+    if [ -e $PROFILE_OUTPUT_DIR/prof_filehandles.txt ]; then
+        rm $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+    fi
+
     while [ 1 ]
     do 
         # save record of ssd capacity
@@ -73,7 +77,12 @@ startmon() {
         # save record of running processes
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_ps.txt
         ps -U $USER -o pid,ppid,lwp,nlwp,etime,pcpu,pmem,rss,vsz,cmd -www >> $PROFILE_OUTPUT_DIR/prof_ps.txt
+
+        # save record of running processes
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
         sleep 1m
+
     done
 }
 
