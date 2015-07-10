@@ -1,4 +1,7 @@
 #!/usr/bin/awk -f
+BEGIN {
+    print "timestamp, pcpu, pmem, rss, vsz"
+}
 { 
     if ( $1 == "PROF_BEGIN" ) { 
         print timestamp, sum1, sum2, sum3, sum4;
