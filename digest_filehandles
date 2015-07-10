@@ -1,0 +1,10 @@
+#!/usr/bin/awk -f
+{
+    if ( $1 == "PROF_BEGIN" ) { 
+        timestamp = $2;
+    }
+    # in Linux, second column of /proc/sys/fs/file-nr is always zero
+    else if ( $2 == 0 ) { 
+        print timestamp, $1, $3;
+    }
+}
