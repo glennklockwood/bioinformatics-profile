@@ -1,0 +1,142 @@
+#!/bin/bash
+#PBS -N bbbblast
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=1:00:00
+#PBS -q regular
+#PBS -j oe
+
+BLASTN="/global/u2/g/glock/apps.carver/blast/bin/blastn"
+INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
+OUTPUT_FILE="blast_out.txt"
+OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
+
+DB_DIR="/global/scratch2/sd/glock/blast.db"
+DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
+DBS="nt_dustmasked.00"
+DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
+
+SCRATCH_DEV="/dev/dm-0"
+SCRATCH_DIR="/local/tmp/$USER"
+
+THREADS=24
+APWRAP="aprun -n1 -N1 -d $THREADS"  # for running on Cray
+APWRAP=""                           # when running on cluster
+
+PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast-test.profile"
+
+#
+#  Ensure we don't carry over the results from a previous profiling run
+#
+if [ -d $PROFILE_OUTPUT_DIR ]; then
+  echo "Need to kill $PROFILE_OUTPUT_DIR"
+  if [ -d ${PROFILE_OUTPUT_DIR}.old ]; then
+    rm -rf ${PROFILE_OUTPUT_DIR}.old
+  fi
+  mv -v $PROFILE_OUTPUT_DIR ${PROFILE_OUTPUT_DIR}.old
+fi
+mkdir -p $PROFILE_OUTPUT_DIR
+
+#
+#  Functions to generate profiling data
+#
+drop_begin() {
+    echo "PROF_BEGIN $(date +%s)"
+}
+startmon() { 
+    echo "Starting IO profile..."
+    drop_begin  > $PROFILE_OUTPUT_DIR/prof_iostat.txt
+    iostat -dkt 30 $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
+
+    if [ -e $PROFILE_OUTPUT_DIR/prof_df.txt ]; then
+        rm $PROFILE_OUTPUT_DIR/prof_df.txt
+    fi
+    if [ -e $PROFILE_OUTPUT_DIR/prof_ps.txt ]; then
+        rm $PROFILE_OUTPUT_DIR/prof_ps.txt
+    fi
+    if [ -e $PROFILE_OUTPUT_DIR/prof_filehandles.txt ]; then
+        rm $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+    fi
+
+    while [ 1 ]
+    do 
+        # save record of ssd capacity
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
+        df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
+
+        # save record of running processes
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_ps.txt
+        ps -U $USER -o pid,ppid,lwp,nlwp,etime,pcpu,pmem,rss,vsz,maj_flt,min_flt,cmd -www >> $PROFILE_OUTPUT_DIR/prof_ps.txt
+
+        # save record of open file handles
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+
+        # save record of virtual memory state
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
+        cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
+
+        sleep 1m
+
+    done
+}
+
+#
+#  Stage in input data
+#
+if [ -d "$SCRATCH_DIR" ]; then
+  rm -rf $SCRATCH_DIR
+fi
+mkdir -p $SCRATCH_DIR || exit 1
+
+for dbfile in $DBS
+do
+    cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
+done
+
+#
+# Create database alias file
+#
+echo "Creating $SCRATCH_DIR/testdb.nal"
+cat <<EOF > $SCRATCH_DIR/testdb.nal
+TITLE nt
+DBLIST $DBS
+EOF
+echo "It contains:"
+cat $SCRATCH_DIR/testdb.nal
+echo
+
+#
+#  For debugging purposes
+#
+echo "The contents of the scratch database directory are:"
+ls $SCRATCH_DIR/
+echo
+
+#
+#  Start profiling
+#
+if [ ! $NO_PROFILE ]; then
+    startmon &
+    monpid=$!
+fi
+
+$APWRAP $BLASTN \
+    -num_threads $THREADS \
+    -evalue 1e-30 \
+    -perc_identity 90 \
+    -word_size 45 \
+    -task megablast \
+    -outfmt 0 \
+    -query $INPUT \
+    -db ${SCRATCH_DIR}/testdb > $SCRATCH_DIR/$OUTPUT_FILE
+
+echo "$(date) - Begin moving output data off of local disk"
+mv $SCRATCH_DIR/$OUTPUT_FILE $OUTPUT_DIR/$OUTPUT_FILE
+echo "$(date) - Finished moving output data off of local disk"
+rm -rf $SCRATCH_DIR
+
+if [ ! $NO_PROFILE ]; then
+    ### Let one last ps/df fire before shutting everything down
+    sleep 90
+    kill $monpid
+fi
