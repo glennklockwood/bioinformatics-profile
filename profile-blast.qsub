@@ -3,12 +3,17 @@
 #PBS -l nodes=1:ppn=8
 #PBS -l walltime=1:00:00
 #PBS -q regular
-#PBS -j oe
+#PBS -o "quick.out"
+#PBS -e "quick.err"
 
 BLASTN="/global/u2/g/glock/apps.carver/blast/bin/blastn"
 INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
-OUTPUT_FILE="blast_out.txt"
+OUTPUT_FILE="blastn.out"
 OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
+
+PROFILE_INTERVAL=30
+PROFILE_INTERVAL=5
+PROFILE_INTERVAL=1
 
 DB_DIR="/global/scratch2/sd/glock/blast.db"
 DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
@@ -18,9 +23,10 @@ DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
 SCRATCH_DEV="/dev/dm-0"
 SCRATCH_DIR="/local/tmp/$USER"
 
-THREADS=24
+THREADS="${PBS_NP-1}"
 APWRAP="aprun -n1 -N1 -d $THREADS"  # for running on Cray
-APWRAP=""                           # when running on cluster
+APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"                  # when running on cluster
+APWRAP=""
 
 PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast-test.profile"
 
@@ -28,7 +34,7 @@ PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast-test.profile"
 #  Ensure we don't carry over the results from a previous profiling run
 #
 if [ -d $PROFILE_OUTPUT_DIR ]; then
-  echo "Need to kill $PROFILE_OUTPUT_DIR"
+  echo "$(date) - Need to kill $PROFILE_OUTPUT_DIR"
   if [ -d ${PROFILE_OUTPUT_DIR}.old ]; then
     rm -rf ${PROFILE_OUTPUT_DIR}.old
   fi
@@ -43,9 +49,9 @@ drop_begin() {
     echo "PROF_BEGIN $(date +%s)"
 }
 startmon() { 
-    echo "Starting IO profile..."
+    echo "$(date) - Starting IO profile..."
     drop_begin  > $PROFILE_OUTPUT_DIR/prof_iostat.txt
-    iostat -dkt 30 $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
+    iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
 
     if [ -e $PROFILE_OUTPUT_DIR/prof_df.txt ]; then
         rm $PROFILE_OUTPUT_DIR/prof_df.txt
@@ -75,42 +81,40 @@ startmon() {
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
         cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
 
-        sleep 1m
+        sleep ${PROFILE_INTERVAL}s
 
     done
 }
 
 #
-#  Stage in input data
+#  Stage in input data and create database alias file
 #
 if [ -d "$SCRATCH_DIR" ]; then
   rm -rf $SCRATCH_DIR
 fi
 mkdir -p $SCRATCH_DIR || exit 1
+if [ ! $NO_STAGE ]; then
+    echo "$(date) - Staging in $DB_DIR/${dbfile}* ($(du -hcs $DB_DIR/${dbfile}*))"
+    for dbfile in $DBS
+    do
+        cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
+    done
 
-for dbfile in $DBS
-do
-    cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
-done
-
-#
-# Create database alias file
-#
-echo "Creating $SCRATCH_DIR/testdb.nal"
-cat <<EOF > $SCRATCH_DIR/testdb.nal
+    echo "$(date) - Creating $SCRATCH_DIR/testdb.nal"
+    cat <<EOF > $SCRATCH_DIR/testdb.nal
 TITLE nt
 DBLIST $DBS
 EOF
-echo "It contains:"
-cat $SCRATCH_DIR/testdb.nal
-echo
+else
+    # Create the alias in the master db directory if we aren't
+    # staging data to a local disk
+    echo "$(date) - Creating $DB_DIR/testdb.nal"
+cat <<EOF > $DB_DIR/testdb.nal
+TITLE nt
+DBLIST $DBS
+EOF
 
-#
-#  For debugging purposes
-#
-echo "The contents of the scratch database directory are:"
-ls $SCRATCH_DIR/
-echo
+fi
 
 #
 #  Start profiling
@@ -128,15 +132,21 @@ $APWRAP $BLASTN \
     -task megablast \
     -outfmt 0 \
     -query $INPUT \
-    -db ${SCRATCH_DIR}/testdb > $SCRATCH_DIR/$OUTPUT_FILE
+    -db ${DB_DIR}/testdb > $SCRATCH_DIR/$OUTPUT_FILE 2> $SCRATCH_DIR/${OUTPUT_FILE%out}err
 
 echo "$(date) - Begin moving output data off of local disk"
-mv $SCRATCH_DIR/$OUTPUT_FILE $OUTPUT_DIR/$OUTPUT_FILE
+mv $SCRATCH_DIR/$OUTPUT_FILE $OUTPUT_DIR/
+mv $SCRATCH_DIR/${OUTPUT_FILE%out}err $OUTPUT_DIR/
 echo "$(date) - Finished moving output data off of local disk"
+echo "$(date) - Removing $SCRATCH_DIR"
 rm -rf $SCRATCH_DIR
+echo "$(date) - Done cleaning up $SCRATCH_DIR"
 
 if [ ! $NO_PROFILE ]; then
     ### Let one last ps/df fire before shutting everything down
     sleep 90
     kill $monpid
 fi
+
+echo "Final job status from Torque:"
+qstat -f $PBS_JOBID
