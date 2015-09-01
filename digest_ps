@@ -1,20 +1,24 @@
 #!/usr/bin/awk -f
 BEGIN {
-    print "timestamp, pcpu, pmem, rss, vsz"
+    print "timestamp, pcpu, pmem, rss, vsz, majfl"
+    t0 = -1
 }
 { 
     if ( $1 == "PROF_BEGIN" ) { 
-        print timestamp, sum1, sum2, sum3, sum4;
+        if ( t0 == -1 ) { t0 = $2; }
+        print timestamp-t0, sum1, sum2, sum3, sum4, sum5;
         timestamp = $2;
         sum1 = 0;
         sum2 = 0;
         sum3 = 0;
         sum4 = 0;
+        sum5 = 0;
     } 
     else if ( $1 != "PID" ) { 
         sum1 += $6;
         sum2 += $7;
         sum3 += $8;
         sum4 += $9; 
+        sum5 += $10;
     }
 }
