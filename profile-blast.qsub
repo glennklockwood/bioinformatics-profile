@@ -1,8 +1,8 @@
 #!/bin/bash
 #PBS -N bbbblast
-#PBS -l nodes=1:ppn=1
-#PBS -l walltime=24:00:00
-#PBS -q regular
+#PBS -l mppwidth=24
+#PBS -l walltime=00:30:00
+#PBS -q debug
 #PBS -o jobscript.out
 #PBS -e jobscript.err
 #
@@ -11,9 +11,11 @@
 #     NO_BONNIE=1 to skip bonnie++ prelude (designed to flush disk cache)
 #     NO_PROFILE=1 to skip profiling altogether
 #     
+NO_BONNIE=1
+NO_STAGE=1
 
 # INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
-INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
+INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
 
 # DBS="nt_dustmasked.00"
 # DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
@@ -28,27 +30,34 @@ PROFILE_INTERVAL=5
 #
 TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
 BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
-BLASTN="/global/u2/g/glock/apps.carver/blast/bin/blastn"
+BLASTN="/global/homes/g/glock/apps.edison/blast/ncbi-blast-2.2.31+/bin/blastn"
 
 #
 #  Location of intput/output directories
 #
-DB_DIR="/global/scratch2/sd/glock/blast.db"
-PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast-test.profile"
+DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
+PROFILE_OUTPUT_DIR="/scratch1/scratchdirs/glock/blast/blast-test.profile"
 
 #
 #  Scratch device and its block device (for iostat).  Leave SCRATCH_DEV empty
 #  to skip iostat profile
 #
-SCRATCH_DEV="/dev/dm-0"
-SCRATCH_DIR="/local/tmp/$USER"
+# SCRATCH_DEV="/dev/dm-0"
+# SCRATCH_DIR="/local/tmp/$USER"
+SCRATCH_DEV=""
+SCRATCH_DIR=/scratch1/scratchdirs/glock/blast/scratch
+
+#
+#  Lustre file system of choice (leave blank to skip)
+#
+LUSTRE_FS="snx11025"
 
 OUTPUT_FILE="blastn.out"
 OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
 
 THREADS="${PBS_NP-1}"
-APWRAP="aprun -n1 -N1 -d $THREADS"                      # for running on Cray
 APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"       # when running on cluster
+APWRAP="aprun -n1 -N1 -d $THREADS"                      # for running on Cray
 APWRAP=""
 
 #
@@ -64,6 +73,11 @@ fi
 mkdir -p $PROFILE_OUTPUT_DIR
 
 #
+#  Debugging - drop compute node env
+#
+env > $PROFILE_OUTPUT_DIR/env
+
+#
 #  Functions to generate profiling data
 #
 drop_begin() {
@@ -71,19 +85,28 @@ drop_begin() {
 }
 startmon() { 
     echo "$(date) - Starting IO profile..."
-    drop_begin  > $PROFILE_OUTPUT_DIR/prof_iostat.txt
+
     if [ ! -z "$SCRATCH_DEV" ]; then
+        drop_begin  > $PROFILE_OUTPUT_DIR/prof_iostat.txt
         iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
     fi
 
-    if [ -e $PROFILE_OUTPUT_DIR/prof_df.txt ]; then
-        rm $PROFILE_OUTPUT_DIR/prof_df.txt
-    fi
-    if [ -e $PROFILE_OUTPUT_DIR/prof_ps.txt ]; then
-        rm $PROFILE_OUTPUT_DIR/prof_ps.txt
-    fi
-    if [ -e $PROFILE_OUTPUT_DIR/prof_filehandles.txt ]; then
-        rm $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt
+    do
+        if [ -e $PROFILE_OUTPUT_DIR/$profile_output ]; then
+            rm $PROFILE_OUTPUT_DIR/$profile_output
+        fi
+    done
+
+    # Try to find the lustre file system stats file
+    LUSTRE_PROC_STATS=""
+    if [ ! -z "$LUSTRE_FS" ]; then
+        LUSTRE_PROC_STATS=$(find /proc/fs/lustre/llite -name stats 2>/dev/null | grep "$LUSTRE_FS")
+        if [ -z "$LUSTRE_PROC_STATS" ]; then
+            echo "$(date) - Could not find Lustre fs stats file for $LUSTRE_FS"
+        else
+            echo "$(date) - Found Lustre fs stats file at $LUSTRE_PROC_STATS"
+        fi
     fi
 
     while [ 1 ]
@@ -103,6 +126,12 @@ startmon() {
         # save record of virtual memory state
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
         cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
+
+        # only attempt to drop Lustre stats if the fs is mounted
+        if [ ! -z "$LUSTRE_PROC_STATS" ]; then
+            drop_begin >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            cat $LUSTRE_PROC_STATS >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+        fi
 
         sleep ${PROFILE_INTERVAL}s
 
