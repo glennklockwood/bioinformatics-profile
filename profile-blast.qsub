@@ -1,44 +1,65 @@
 #!/bin/bash
 #PBS -N bbbblast
-#PBS -l nodes=1:ppn=8
-#PBS -l walltime=1:00:00
+#PBS -l nodes=1:ppn=1
+#PBS -l walltime=24:00:00
 #PBS -q regular
-#PBS -o "quick.out"
-#PBS -e "quick.err"
+#PBS -o jobscript.out
+#PBS -e jobscript.err
+#
+#  Environment variables for configuring behavior:
+#     NO_STAGE=1 to run BLAST against the location specified by DB_DIR variable
+#     NO_BONNIE=1 to skip bonnie++ prelude (designed to flush disk cache)
+#     NO_PROFILE=1 to skip profiling altogether
+#     
 
-BLASTN="/global/u2/g/glock/apps.carver/blast/bin/blastn"
-INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
-OUTPUT_FILE="blastn.out"
-OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
+# INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
+INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
+
+# DBS="nt_dustmasked.00"
+# DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
+DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
 
 PROFILE_INTERVAL=30
 PROFILE_INTERVAL=5
-PROFILE_INTERVAL=1
+# PROFILE_INTERVAL=1
 
+#
+#  Location of various binaries
+#
+TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
+BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
+BLASTN="/global/u2/g/glock/apps.carver/blast/bin/blastn"
+
+#
+#  Location of intput/output directories
+#
 DB_DIR="/global/scratch2/sd/glock/blast.db"
-DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
-DBS="nt_dustmasked.00"
-DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
+PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast-test.profile"
 
+#
+#  Scratch device and its block device (for iostat).  Leave SCRATCH_DEV empty
+#  to skip iostat profile
+#
 SCRATCH_DEV="/dev/dm-0"
 SCRATCH_DIR="/local/tmp/$USER"
 
-THREADS="${PBS_NP-1}"
-APWRAP="aprun -n1 -N1 -d $THREADS"  # for running on Cray
-APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"                  # when running on cluster
-APWRAP=""
+OUTPUT_FILE="blastn.out"
+OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
 
-PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast-test.profile"
+THREADS="${PBS_NP-1}"
+APWRAP="aprun -n1 -N1 -d $THREADS"                      # for running on Cray
+APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"       # when running on cluster
+APWRAP=""
 
 #
 #  Ensure we don't carry over the results from a previous profiling run
 #
 if [ -d $PROFILE_OUTPUT_DIR ]; then
-  echo "$(date) - Need to kill $PROFILE_OUTPUT_DIR"
-  if [ -d ${PROFILE_OUTPUT_DIR}.old ]; then
-    rm -rf ${PROFILE_OUTPUT_DIR}.old
-  fi
-  mv -v $PROFILE_OUTPUT_DIR ${PROFILE_OUTPUT_DIR}.old
+    echo "$(date) - Need to kill $PROFILE_OUTPUT_DIR"
+    if [ -d ${PROFILE_OUTPUT_DIR}.old ]; then
+        rm -rf ${PROFILE_OUTPUT_DIR}.old
+    fi
+    mv -v $PROFILE_OUTPUT_DIR ${PROFILE_OUTPUT_DIR}.old
 fi
 mkdir -p $PROFILE_OUTPUT_DIR
 
@@ -51,7 +72,9 @@ drop_begin() {
 startmon() { 
     echo "$(date) - Starting IO profile..."
     drop_begin  > $PROFILE_OUTPUT_DIR/prof_iostat.txt
-    iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
+    if [ ! -z "$SCRATCH_DEV" ]; then
+        iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
+    fi
 
     if [ -e $PROFILE_OUTPUT_DIR/prof_df.txt ]; then
         rm $PROFILE_OUTPUT_DIR/prof_df.txt
@@ -90,7 +113,7 @@ startmon() {
 #  Stage in input data and create database alias file
 #
 if [ -d "$SCRATCH_DIR" ]; then
-  rm -rf $SCRATCH_DIR
+    rm -rf $SCRATCH_DIR
 fi
 mkdir -p $SCRATCH_DIR || exit 1
 if [ ! $NO_STAGE ]; then
@@ -114,6 +137,17 @@ TITLE nt
 DBLIST $DBS
 EOF
 
+fi
+
+#
+#  Run bonnie++ to scramble the disk cache and get rid of the files we just
+#  copied to $SCRATCH_DIR
+#
+if [ ! $NO_BONNIE ]; then
+    echo "$(date) - Running bonnie++"
+    memtot_mib=$(awk '/MemTotal:/ { print int($2/1024) + 1 }' /proc/meminfo)
+    $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib
+    echo "$(date) - Finished bonnie++"
 fi
 
 #
