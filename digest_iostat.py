@@ -10,6 +10,8 @@ def digest_iostat():
     processing = False
     line_no = 0
     prev_timestamp_str = None
+    first_timestamp = None
+    print "%10s %10s %10s %10s" % ( 'elaps.time', 'iops', 'kb/s read', 'kb/s write' )
     while True:
         line = lines[line_no]
         if line.startswith('PROF_BEGIN'):
@@ -17,9 +19,17 @@ def digest_iostat():
             line_no += 7
         elif processing:
             timestamp_str = line.strip()
-            timestamp = datetime.strptime(timestamp_str, "%m/%d/%Y %I:%M:%S %p")
+            if timestamp_str.startswith('Time:'):
+                timestamp = datetime.strptime(timestamp_str, "Time: %I:%M:%S %p")
+            else:
+                timestamp = datetime.strptime(timestamp_str, "%m/%d/%Y %I:%M:%S %p")
+            if first_timestamp is None:
+                first_timestamp = timestamp
             if prev_timestamp_str is not None:
-                prev_timestamp = datetime.strptime(prev_timestamp_str, "%m/%d/%Y %I:%M:%S %p")
+                if prev_timestamp_str.startswith('Time:'):
+                    prev_timestamp = datetime.strptime(prev_timestamp_str, "Time: %I:%M:%S %p")
+                else:
+                    prev_timestamp = datetime.strptime(prev_timestamp_str, "%m/%d/%Y %I:%M:%S %p")
                 if (timestamp - prev_timestamp).total_seconds() > 600:
                     print "WARNING: %s (%s) <-> %s (%s) > 600 sec" % ( 
                         prev_timestamp.strftime("%c"), 
@@ -29,8 +39,8 @@ def digest_iostat():
                     raise Exception("time gap detected")
         
             md0_line = lines[line_no+2].strip().split()
-            print "%s %s %s %s" % (
-                timestamp.strftime("%s"),
+            print "%10d %10s %10s %10s" % (
+                (timestamp - first_timestamp).total_seconds(),
                 md0_line[1],
                 md0_line[2],
                 md0_line[3]
