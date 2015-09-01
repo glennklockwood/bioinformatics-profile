@@ -12,7 +12,7 @@
 import sys
 
 def print_delta( data, last_data, t0 ):
-    print "%-7d %10.1f %10.1f" % (
+    print "%-12.3f %10.1f %10.1f" % (
         data['snapshot_time'] - t0,
         (data['osc_read'] - last_data['osc_read']) / 1024.0 / 1024.0,
         (data['osc_write'] - last_data['osc_write']) / 1024.0 / 1024.0 )
@@ -37,7 +37,7 @@ def main( input_file ):
             if data is not None:
                 last_data = data
             data = {}
-            val = int( val.split('.')[0] )
+            val = float( val.split()[0] )
             if t0 is None:
                 t0 = val
         elif key in _SPECIAL_PARSE_KEYS:
