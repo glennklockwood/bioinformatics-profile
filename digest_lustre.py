@@ -12,10 +12,19 @@
 import sys
 
 def print_delta( data, last_data, t0 ):
-    print "%-12.3f %10.1f %10.1f" % (
+    new_read_ops  = data['osc_read_ops'] - last_data['osc_read_ops']
+    new_write_ops = data['osc_write_ops'] - last_data['osc_write_ops']
+    new_read_mib  = data['osc_read'] - last_data['osc_read']
+    new_write_mib = data['osc_write'] - last_data['osc_write']
+    print "%-12.3f %10d %10d %10.1f %10.1f %10.1f %10.1f" % (
         data['snapshot_time'] - t0,
-        (data['osc_read'] - last_data['osc_read']) / 1024.0 / 1024.0,
-        (data['osc_write'] - last_data['osc_write']) / 1024.0 / 1024.0 )
+        new_read_ops,
+        new_write_ops,
+        new_read_mib  / 1024.0 / 1024.0,
+        new_write_mib / 1024.0 / 1024.0,
+        new_read_mib / float(new_read_ops) if new_read_ops > 0 else 0.0,
+        new_write_mib / float(new_write_ops) if new_write_ops > 0 else 0.0,
+        )
 
 def main( input_file ):
     last_data = None
@@ -41,7 +50,11 @@ def main( input_file ):
             if t0 is None:
                 t0 = val
         elif key in _SPECIAL_PARSE_KEYS:
-            val = int(val.split()[-1])
+            special_key = key + '_ops'
+            special_val = int( val.split()[0] )
+            data[special_key] = special_val
+
+            val = int( val.split()[-1] )
         else:
             val = int(val.split()[0])
     
