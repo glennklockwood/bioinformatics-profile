@@ -1,0 +1,242 @@
+#!/bin/bash
+#$ -N bbbblast
+#$ -l exclusive.c
+#$ -l h_rt=12:00:00
+#$ -o jobscript.out
+#$ -e jobscript.err
+#$ -cwd
+#$ -M glock@lbl.gov
+#$ -m ae
+#
+#  Environment variables for configuring behavior:
+#     NO_STAGE=1 to run BLAST against the location specified by DB_DIR variable
+#     NO_BONNIE=1 to skip bonnie++ prelude (designed to flush disk cache)
+#     NO_PROFILE=1 to skip profiling altogether
+#     
+NO_BONNIE=1
+
+# INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
+# INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
+INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
+
+# DBS="nt_dustmasked.00"
+# DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
+DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
+
+PROFILE_INTERVAL=30
+PROFILE_INTERVAL=5
+# PROFILE_INTERVAL=1
+
+#
+#  Location of various binaries
+#
+TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
+BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
+BLASTN="/global/homes/g/glock/apps.edison/blast/ncbi-blast-2.2.31+/bin/blastn"
+IS_FILE_IN_PAGE_CACHE="/global/u2/g/glock/bin/is_file_in_page_cache"
+DROP_FILE_FROM_PAGE_CACHE="/global/u2/g/glock/bin/drop_file_from_page_cache"
+
+#
+#  Location of intput/output directories
+#
+# DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
+# PROFILE_OUTPUT_DIR="/scratch1/scratchdirs/glock/blast/blast-test.profile"
+DB_DIR="/global/scratch2/sd/glock/blast.db"
+PROFILE_OUTPUT_DIR="/global/scratch2/sd/glock/blast/blast-test.profile"
+
+#
+#  Scratch device and its block device (for iostat).  Leave SCRATCH_DEV empty
+#  to skip iostat profile
+#
+# SCRATCH_DEV="/dev/dm-0"
+# SCRATCH_DIR="/local/tmp/$USER"
+SCRATCH_DEV=$(readlink -f $(mount | awk '/on \/scratch/ { print $1 }' | head -n1))
+SCRATCH_DIR=$TMPDIR
+
+#
+#  Lustre file system of choice (leave blank to skip)
+#
+# LUSTRE_FS="snx11025"
+LUSTRE_FS=""
+
+OUTPUT_FILE="blastn.out"
+OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
+
+THREADS="${PBS_NP-8}"
+APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"       # when running on cluster
+APWRAP="aprun -n1 -N1 -d $THREADS"                      # for running on Cray
+APWRAP=""
+
+#
+#  Ensure we don't carry over the results from a previous profiling run
+#
+if [ -d $PROFILE_OUTPUT_DIR ]; then
+    echo "$(date) - Need to kill $PROFILE_OUTPUT_DIR"
+    if [ -d ${PROFILE_OUTPUT_DIR}.old ]; then
+        rm -rf ${PROFILE_OUTPUT_DIR}.old
+    fi
+    mv -v $PROFILE_OUTPUT_DIR ${PROFILE_OUTPUT_DIR}.old
+fi
+mkdir -p $PROFILE_OUTPUT_DIR
+
+#
+#  Debugging - drop compute node env
+#
+env > $PROFILE_OUTPUT_DIR/env
+
+#
+#  Functions to generate profiling data
+#
+drop_begin() {
+    echo "PROF_BEGIN $(date +%s)"
+}
+startmon() { 
+    echo "$(date) - Starting IO profile..."
+
+    if [ ! -z "$SCRATCH_DEV" ]; then
+        drop_begin  > $PROFILE_OUTPUT_DIR/prof_iostat.txt
+        iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
+    fi
+
+    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt
+    do
+        if [ -e $PROFILE_OUTPUT_DIR/$profile_output ]; then
+            rm $PROFILE_OUTPUT_DIR/$profile_output
+        fi
+    done
+
+    # Try to find the lustre file system stats file
+    LUSTRE_PROC_STATS=""
+    if [ ! -z "$LUSTRE_FS" ]; then
+        LUSTRE_PROC_STATS=$(find /proc/fs/lustre/llite -name stats 2>/dev/null | grep "$LUSTRE_FS")
+        if [ -z "$LUSTRE_PROC_STATS" ]; then
+            echo "$(date) - Could not find Lustre fs stats file for $LUSTRE_FS"
+        else
+            echo "$(date) - Found Lustre fs stats file at $LUSTRE_PROC_STATS"
+        fi
+    fi
+
+    while [ 1 ]
+    do 
+        # save record of ssd capacity
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
+        df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
+
+        # save record of running processes
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_ps.txt
+        ps -U $USER -o pid,ppid,lwp,nlwp,etime,pcpu,pmem,rss,vsz,maj_flt,min_flt,state,cmd -www >> $PROFILE_OUTPUT_DIR/prof_ps.txt
+
+        # save record of open file handles
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+
+        # save record of virtual memory state
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
+        cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
+
+        # only attempt to drop Lustre stats if the fs is mounted
+        if [ ! -z "$LUSTRE_PROC_STATS" ]; then
+            drop_begin >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            cat $LUSTRE_PROC_STATS ${LUSTRE_PROC_STATS%stats}statahead_stats ${LUSTRE_PROC_STATS%stats}read_ahead_stats >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            # statahead_stats read_ahead_stats
+            # ${OUTPUT_FILE%out}err
+        fi
+
+        sleep ${PROFILE_INTERVAL}s
+
+    done
+}
+
+#
+#  Stage in input data and create database alias file
+#
+if [ -d "$SCRATCH_DIR" ]; then
+    rm -rf $SCRATCH_DIR
+fi
+mkdir -p $SCRATCH_DIR || exit 1
+if [ ! $NO_STAGE ]; then
+    echo "$(date) - Staging in $DB_DIR/${dbfile}* ($(du -hcs $DB_DIR/${dbfile}* | tail -n1 | cut -d\t -f1))"
+    for dbfile in $DBS
+    do
+        cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
+    done
+
+    echo "$(date) - Creating $SCRATCH_DIR/testdb.nal"
+    cat <<EOF > $SCRATCH_DIR/testdb.nal
+TITLE nt
+DBLIST $DBS
+EOF
+else
+    # Create the alias in the master db directory if we aren't
+    # staging data to a local disk
+    echo "$(date) - Creating $DB_DIR/testdb.nal"
+cat <<EOF > $DB_DIR/testdb.nal
+TITLE nt
+DBLIST $DBS
+EOF
+
+fi
+
+#
+#  Run bonnie++ to scramble the disk cache and get rid of the files we just
+#  copied to $SCRATCH_DIR
+#
+if [ ! $NO_BONNIE ]; then
+    memtot_mib=$(awk '/MemTotal:/ { print int($2/1024) + 1 }' /proc/meminfo)
+    echo "$(date) - Running bonnie++ assuming $memtot_mib MB of RAM"
+    set -x
+    $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib 2>&1
+    set +x
+    echo "$(date) - Finished bonnie++"
+fi
+
+#
+#  Drop all of the files we just copied from cache
+#
+if [ -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
+    echo "$(date) - Purging staged data from file cache"
+    for i in $SCRATCH_DIR/${dbfile}*; do
+        echo -n "$(date) - "
+        $IS_FILE_IN_PAGE_CACHE $i
+        echo "$(date) - Dropping $i from cache"
+        $DROP_FILE_FROM_PAGE_CACHE $i
+        echo -n "$(date) - "
+        $IS_FILE_IN_PAGE_CACHE $i
+    done
+fi
+
+#
+#  Start profiling
+#
+if [ ! $NO_PROFILE ]; then
+    startmon &
+    monpid=$!
+fi
+
+echo "$(date) - Running command"
+set -x
+$APWRAP $BLASTN \
+    -num_threads $THREADS \
+    -evalue 1e-30 \
+    -perc_identity 90 \
+    -word_size 45 \
+    -task megablast \
+    -outfmt 0 \
+    -query $INPUT \
+    -db ${DB_DIR}/testdb > $SCRATCH_DIR/$OUTPUT_FILE 2> $SCRATCH_DIR/${OUTPUT_FILE%out}err
+set +x
+echo "$(date) - Finished running command"
+
+echo "$(date) - Begin moving output data off of local disk"
+mv $SCRATCH_DIR/$OUTPUT_FILE $OUTPUT_DIR/
+mv $SCRATCH_DIR/${OUTPUT_FILE%out}err $OUTPUT_DIR/
+echo "$(date) - Finished moving output data off of local disk"
+echo "$(date) - Removing $SCRATCH_DIR"
+rm -rf $SCRATCH_DIR
+echo "$(date) - Done cleaning up $SCRATCH_DIR"
+
+if [ ! $NO_PROFILE ]; then
+    ### Let one last ps/df fire before shutting everything down
+    sleep 90
+    kill $monpid
+fi
