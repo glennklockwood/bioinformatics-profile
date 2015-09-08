@@ -10,9 +10,13 @@
 #     NO_STAGE=1 to run BLAST against the location specified by DB_DIR variable
 #     NO_BONNIE=1 to skip bonnie++ prelude (designed to flush disk cache)
 #     NO_PROFILE=1 to skip profiling altogether
+#     NO_DF=1 to skip profiling file system capacities
+#     NO_FILEHANDLES=1 to skip profiling file handle counts
 #     
 NO_BONNIE=1
 NO_STAGE=1
+NO_DF=1
+NO_FILEHANDLES=1
 
 # INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
 INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
@@ -23,7 +27,7 @@ DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dust
 
 PROFILE_INTERVAL=30
 PROFILE_INTERVAL=5
-# PROFILE_INTERVAL=1
+PROFILE_INTERVAL=1
 
 #
 #  Location of various binaries
@@ -112,16 +116,20 @@ startmon() {
     while [ 1 ]
     do 
         # save record of ssd capacity
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
-        df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
+        if [ -z "$NO_DF" ]; then
+            drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
+            df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
+        fi
 
         # save record of running processes
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_ps.txt
         ps -U $USER -o pid,ppid,lwp,nlwp,etime,pcpu,pmem,rss,vsz,maj_flt,min_flt,state,cmd -www >> $PROFILE_OUTPUT_DIR/prof_ps.txt
 
         # save record of open file handles
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
-        cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        if [ -z "$NO_FILEHANDLES" ]; then
+            drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+            cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        fi
 
         # save record of virtual memory state
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
@@ -130,7 +138,9 @@ startmon() {
         # only attempt to drop Lustre stats if the fs is mounted
         if [ ! -z "$LUSTRE_PROC_STATS" ]; then
             drop_begin >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
-            cat $LUSTRE_PROC_STATS >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            cat $LUSTRE_PROC_STATS ${LUSTRE_PROC_STATS%stats}statahead_stats ${LUSTRE_PROC_STATS%stats}read_ahead_stats >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            # statahead_stats read_ahead_stats
+            # ${OUTPUT_FILE%out}err
         fi
 
         sleep ${PROFILE_INTERVAL}s
