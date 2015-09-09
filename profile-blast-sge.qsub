@@ -15,7 +15,6 @@
 #     NO_DF=1 to skip profiling file system capacities
 #     NO_FILEHANDLES=1 to skip profiling file handle counts
 #     
-NO_BONNIE=1
 
 # INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
 # INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
@@ -169,6 +168,21 @@ if [ ! $NO_STAGE ]; then
         cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
     done
     DB_DIR=$SCRATCH_DIR
+
+    ### Drop all of the files we just copied from cache
+    if [ -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
+        echo "$(date) - Purging staged data from file cache"
+        for i in $SCRATCH_DIR/${dbfile}*; do
+            echo -n "$(date) - "
+            $IS_FILE_IN_PAGE_CACHE $i
+            echo "$(date) - Dropping $i from cache"
+            $DROP_FILE_FROM_PAGE_CACHE $i
+            echo -n "$(date) - "
+            $IS_FILE_IN_PAGE_CACHE $i
+        done
+        ### Let dirty pages and stuff flush out
+        sleep 60
+    fi
 fi
 
 echo "$(date) - Creating $DB_DIR/testdb.nal"
@@ -188,23 +202,6 @@ if [ ! $NO_BONNIE ]; then
     $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib 2>&1
     set +x
     echo "$(date) - Finished bonnie++"
-fi
-
-#
-#  Drop all of the files we just copied from cache
-#
-if [ ! $NO_STAGE -a -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
-    echo "$(date) - Purging staged data from file cache"
-    for i in $SCRATCH_DIR/${dbfile}*; do
-        echo -n "$(date) - "
-        $IS_FILE_IN_PAGE_CACHE $i
-        echo "$(date) - Dropping $i from cache"
-        $DROP_FILE_FROM_PAGE_CACHE $i
-        echo -n "$(date) - "
-        $IS_FILE_IN_PAGE_CACHE $i
-    done
-    ### Let dirty pages and stuff flush out
-    sleep 300
 fi
 
 #
