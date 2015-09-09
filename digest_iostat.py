@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 
+import os
 import sys
 from datetime import datetime, timedelta
+
+_DATE_FORMAT = os.environ.get('DATE_FORMAT')
 
 def digest_iostat():
     with open( sys.argv[1], 'r' ) as fp:
@@ -19,14 +22,18 @@ def digest_iostat():
             line_no += 7
         elif processing:
             timestamp_str = line.strip()
-            if timestamp_str.startswith('Time:'):
+            if _DATE_FORMAT is not None:
+                timestamp = datetime.strptime(timestamp_str, _DATE_FORMAT)
+            elif timestamp_str.startswith('Time:'):
                 timestamp = datetime.strptime(timestamp_str, "Time: %I:%M:%S %p")
             else:
                 timestamp = datetime.strptime(timestamp_str, "%m/%d/%Y %I:%M:%S %p")
             if first_timestamp is None:
                 first_timestamp = timestamp
             if prev_timestamp_str is not None:
-                if prev_timestamp_str.startswith('Time:'):
+                if _DATE_FORMAT is not None:
+                    prev_timestamp = datetime.strptime(prev_timestamp_str, _DATE_FORMAT)
+                elif prev_timestamp_str.startswith('Time:'):
                     prev_timestamp = datetime.strptime(prev_timestamp_str, "Time: %I:%M:%S %p")
                 else:
                     prev_timestamp = datetime.strptime(prev_timestamp_str, "%m/%d/%Y %I:%M:%S %p")
