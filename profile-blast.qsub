@@ -22,8 +22,8 @@ NO_FILEHANDLES=1
 INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
 
 # DBS="nt_dustmasked.00"
-# DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
-DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
+DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
+# DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
 
 PROFILE_INTERVAL=30
 PROFILE_INTERVAL=5
@@ -35,6 +35,8 @@ PROFILE_INTERVAL=1
 TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
 BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
 BLASTN="/global/homes/g/glock/apps.edison/blast/ncbi-blast-2.2.31+/bin/blastn"
+IS_FILE_IN_PAGE_CACHE="/global/u2/g/glock/bin/is_file_in_page_cache"
+DROP_FILE_FROM_PAGE_CACHE="/global/u2/g/glock/bin/drop_file_from_page_cache"
 
 #
 #  Location of intput/output directories
@@ -95,7 +97,7 @@ startmon() {
         iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
     fi
 
-    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt
+    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt prof_meminfo.txt
     do
         if [ -e $PROFILE_OUTPUT_DIR/$profile_output ]; then
             rm $PROFILE_OUTPUT_DIR/$profile_output
@@ -135,12 +137,14 @@ startmon() {
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
         cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
 
+        # save record of memory
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
+        cat /proc/meminfo >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
+ 
         # only attempt to drop Lustre stats if the fs is mounted
         if [ ! -z "$LUSTRE_PROC_STATS" ]; then
             drop_begin >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
             cat $LUSTRE_PROC_STATS ${LUSTRE_PROC_STATS%stats}statahead_stats ${LUSTRE_PROC_STATS%stats}read_ahead_stats >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
-            # statahead_stats read_ahead_stats
-            # ${OUTPUT_FILE%out}err
         fi
 
         sleep ${PROFILE_INTERVAL}s
@@ -156,37 +160,48 @@ if [ -d "$SCRATCH_DIR" ]; then
 fi
 mkdir -p $SCRATCH_DIR || exit 1
 if [ ! $NO_STAGE ]; then
-    echo "$(date) - Staging in $DB_DIR/${dbfile}* ($(du -hcs $DB_DIR/${dbfile}*))"
+    echo "$(date) - Staging in $DB_DIR/${dbfile}* ($(du -hcs $DB_DIR/${dbfile}* | tail -n1 | cut -d\t -f1))"
     for dbfile in $DBS
     do
         cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
     done
+    DB_DIR=$SCRATCH_DIR
+fi
 
-    echo "$(date) - Creating $SCRATCH_DIR/testdb.nal"
-    cat <<EOF > $SCRATCH_DIR/testdb.nal
-TITLE nt
-DBLIST $DBS
-EOF
-else
-    # Create the alias in the master db directory if we aren't
-    # staging data to a local disk
-    echo "$(date) - Creating $DB_DIR/testdb.nal"
+echo "$(date) - Creating $DB_DIR/testdb.nal"
 cat <<EOF > $DB_DIR/testdb.nal
 TITLE nt
 DBLIST $DBS
 EOF
-
-fi
 
 #
 #  Run bonnie++ to scramble the disk cache and get rid of the files we just
 #  copied to $SCRATCH_DIR
 #
 if [ ! $NO_BONNIE ]; then
-    echo "$(date) - Running bonnie++"
     memtot_mib=$(awk '/MemTotal:/ { print int($2/1024) + 1 }' /proc/meminfo)
-    $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib
+    echo "$(date) - Running bonnie++ assuming $memtot_mib MB of RAM"
+    set -x
+    $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib 2>&1
+    set +x
     echo "$(date) - Finished bonnie++"
+fi
+
+#
+#  Drop all of the files we just copied from cache
+#
+if [ ! $NO_STAGE -a -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
+    echo "$(date) - Purging staged data from file cache"
+    for i in $SCRATCH_DIR/${dbfile}*; do
+        echo -n "$(date) - "
+        $IS_FILE_IN_PAGE_CACHE $i
+        echo "$(date) - Dropping $i from cache"
+        $DROP_FILE_FROM_PAGE_CACHE $i
+        echo -n "$(date) - "
+        $IS_FILE_IN_PAGE_CACHE $i
+    done
+    ### Let dirty pages and stuff flush out
+    sleep 300
 fi
 
 #
@@ -224,6 +239,3 @@ if [ ! $NO_PROFILE ]; then
     sleep 90
     kill $monpid
 fi
-
-echo "Final job status from Torque:"
-qstat -f $PBS_JOBID

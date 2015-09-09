@@ -12,6 +12,8 @@
 #     NO_STAGE=1 to run BLAST against the location specified by DB_DIR variable
 #     NO_BONNIE=1 to skip bonnie++ prelude (designed to flush disk cache)
 #     NO_PROFILE=1 to skip profiling altogether
+#     NO_DF=1 to skip profiling file system capacities
+#     NO_FILEHANDLES=1 to skip profiling file handle counts
 #     
 NO_BONNIE=1
 
@@ -25,7 +27,7 @@ DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dust
 
 PROFILE_INTERVAL=30
 PROFILE_INTERVAL=5
-# PROFILE_INTERVAL=1
+PROFILE_INTERVAL=1
 
 #
 #  Location of various binaries
@@ -98,7 +100,7 @@ startmon() {
         iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
     fi
 
-    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt
+    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt prof_meminfo.txt
     do
         if [ -e $PROFILE_OUTPUT_DIR/$profile_output ]; then
             rm $PROFILE_OUTPUT_DIR/$profile_output
@@ -119,27 +121,33 @@ startmon() {
     while [ 1 ]
     do 
         # save record of ssd capacity
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
-        df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
+        if [ -z "$NO_DF" ]; then
+            drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
+            df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
+        fi
 
         # save record of running processes
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_ps.txt
         ps -U $USER -o pid,ppid,lwp,nlwp,etime,pcpu,pmem,rss,vsz,maj_flt,min_flt,state,cmd -www >> $PROFILE_OUTPUT_DIR/prof_ps.txt
 
         # save record of open file handles
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
-        cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        if [ -z "$NO_FILEHANDLES" ]; then
+            drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+            cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+        fi
 
         # save record of virtual memory state
         drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
         cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
 
+        # save record of memory
+        drop_begin >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
+        cat /proc/meminfo >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
+ 
         # only attempt to drop Lustre stats if the fs is mounted
         if [ ! -z "$LUSTRE_PROC_STATS" ]; then
             drop_begin >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
             cat $LUSTRE_PROC_STATS ${LUSTRE_PROC_STATS%stats}statahead_stats ${LUSTRE_PROC_STATS%stats}read_ahead_stats >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
-            # statahead_stats read_ahead_stats
-            # ${OUTPUT_FILE%out}err
         fi
 
         sleep ${PROFILE_INTERVAL}s
@@ -160,22 +168,14 @@ if [ ! $NO_STAGE ]; then
     do
         cp -v $DB_DIR/${dbfile}* $SCRATCH_DIR/
     done
+    DB_DIR=$SCRATCH_DIR
+fi
 
-    echo "$(date) - Creating $SCRATCH_DIR/testdb.nal"
-    cat <<EOF > $SCRATCH_DIR/testdb.nal
-TITLE nt
-DBLIST $DBS
-EOF
-else
-    # Create the alias in the master db directory if we aren't
-    # staging data to a local disk
-    echo "$(date) - Creating $DB_DIR/testdb.nal"
+echo "$(date) - Creating $DB_DIR/testdb.nal"
 cat <<EOF > $DB_DIR/testdb.nal
 TITLE nt
 DBLIST $DBS
 EOF
-
-fi
 
 #
 #  Run bonnie++ to scramble the disk cache and get rid of the files we just
@@ -193,7 +193,7 @@ fi
 #
 #  Drop all of the files we just copied from cache
 #
-if [ -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
+if [ ! $NO_STAGE -a -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
     echo "$(date) - Purging staged data from file cache"
     for i in $SCRATCH_DIR/${dbfile}*; do
         echo -n "$(date) - "
@@ -203,6 +203,8 @@ if [ -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
         echo -n "$(date) - "
         $IS_FILE_IN_PAGE_CACHE $i
     done
+    ### Let dirty pages and stuff flush out
+    sleep 300
 fi
 
 #
