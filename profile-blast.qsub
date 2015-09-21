@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N bbbblast
 #PBS -l mppwidth=24
-#PBS -l walltime=00:30:00
+#PBS -l walltime=08:00:00
 #PBS -q debug
 #PBS -o jobscript.out
 #PBS -e jobscript.err
@@ -18,15 +18,53 @@ NO_STAGE=1
 NO_DF=1
 NO_FILEHANDLES=1
 
-# INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa.100"
-INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
+PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/run.ccmwrap.6"
 
-# DBS="nt_dustmasked.00"
-DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03"
-# DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
+#
+#  Special stuff just for running at NERSC
+#    INPUT - path to file containing input queries
+#    DB_DIR - path to directory containing BLAST database
+#    SCRATCH_DIR - working directory when application is run; also where
+#      database/input queries will be copied if NO_STAGE is not set
+#    SCRATCH_DEV - the block device underneath SCRATCH_DEV for iostat to query;
+#      leave empty ("") to skip iostat
+#    LUSTRE_FS - the Lustre fs name (e.g., snx11025) to be used for profiling;
+#      look in /proc/fs/lustre/llite to see options
+#
+PATH_SET="gpfs"
+if [ "$PATH_SET" == "lustre" ]; then
+    INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
+    DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
+    SCRATCH_DIR="/scratch1/scratchdirs/glock/blast/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS="snx11025"
+elif [ "$PATH_SET" == "gpfs" ]; then
+    INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
+    DB_DIR="/global/scratch2/sd/glock/blast.db"
+    SCRATCH_DIR="/global/scratch2/sd/glock/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS=""
+elif [ "$PATH_SET" == "bb" ]; then
+    INPUT="/flash/scratch2/glock/blast.input/contigs.fa"
+    DB_DIR="/flash/scratch2/glock/blast.db"
+    SCRATCH_DIR="/flash/scratch2/glock/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS=""
+elif [ "$PATH_SET" == "local" ]; then
+    INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
+    DB_DIR="/global/scratch2/sd/glock/blast.db"
+    SCRATCH_DEV="/dev/dm-0"
+    SCRATCH_DIR="/local/tmp/$USER"
+    LUSTRE_FS=""
+else
+    echo "Unknown PATH_SET=$PATH_SET; aborting" >&2
+    exit 1
+fi
 
-PROFILE_INTERVAL=30
-PROFILE_INTERVAL=5
+### Number of database shards to use
+DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
+
+### Seconds before dropping profile output
 PROFILE_INTERVAL=1
 
 #
@@ -38,30 +76,10 @@ BLASTN="/global/homes/g/glock/apps.edison/blast/ncbi-blast-2.2.31+/bin/blastn"
 IS_FILE_IN_PAGE_CACHE="/global/u2/g/glock/bin/is_file_in_page_cache"
 DROP_FILE_FROM_PAGE_CACHE="/global/u2/g/glock/bin/drop_file_from_page_cache"
 
-#
-#  Location of intput/output directories
-#
-DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
-PROFILE_OUTPUT_DIR="/scratch1/scratchdirs/glock/blast/blast-test.profile"
-
-#
-#  Scratch device and its block device (for iostat).  Leave SCRATCH_DEV empty
-#  to skip iostat profile
-#
-# SCRATCH_DEV="/dev/dm-0"
-# SCRATCH_DIR="/local/tmp/$USER"
-SCRATCH_DEV=""
-SCRATCH_DIR=/scratch1/scratchdirs/glock/blast/scratch
-
-#
-#  Lustre file system of choice (leave blank to skip)
-#
-LUSTRE_FS="snx11025"
-
 OUTPUT_FILE="blastn.out"
 OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
 
-THREADS="${PBS_NP-1}"
+THREADS="${PBS_NP-24}"
 APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"       # when running on cluster
 APWRAP="aprun -n1 -N1 -d $THREADS"                      # for running on Cray
 APWRAP=""
@@ -77,11 +95,6 @@ if [ -d $PROFILE_OUTPUT_DIR ]; then
     mv -v $PROFILE_OUTPUT_DIR ${PROFILE_OUTPUT_DIR}.old
 fi
 mkdir -p $PROFILE_OUTPUT_DIR
-
-#
-#  Debugging - drop compute node env
-#
-env > $PROFILE_OUTPUT_DIR/env
 
 #
 #  Functions to generate profiling data
@@ -212,6 +225,9 @@ if [ ! $NO_PROFILE ]; then
     monpid=$!
 fi
 
+#
+#  Launch application
+#
 echo "$(date) - Running command"
 set -x
 $APWRAP $BLASTN \
@@ -226,16 +242,22 @@ $APWRAP $BLASTN \
 set +x
 echo "$(date) - Finished running command"
 
-echo "$(date) - Begin moving output data off of local disk"
-mv $SCRATCH_DIR/$OUTPUT_FILE $OUTPUT_DIR/
-mv $SCRATCH_DIR/${OUTPUT_FILE%out}err $OUTPUT_DIR/
-echo "$(date) - Finished moving output data off of local disk"
-echo "$(date) - Removing $SCRATCH_DIR"
-rm -rf $SCRATCH_DIR
-echo "$(date) - Done cleaning up $SCRATCH_DIR"
-
 if [ ! $NO_PROFILE ]; then
     ### Let one last ps/df fire before shutting everything down
     sleep 90
     kill $monpid
 fi
+
+#
+#  Post-run stage-off and cleanup
+#
+echo "$(date) - Begin moving output data off of local disk"
+mv -v $SCRATCH_DIR/$OUTPUT_FILE $OUTPUT_DIR/
+mv -v $SCRATCH_DIR/${OUTPUT_FILE%out}err $OUTPUT_DIR/
+echo "$(date) - Finished moving output data off of local disk"
+
+echo "$(date) - Removing $SCRATCH_DIR"
+rm -rf $SCRATCH_DIR
+echo "$(date) - Done cleaning up $SCRATCH_DIR"
+
+
