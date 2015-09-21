@@ -1,12 +1,12 @@
 #!/usr/bin/awk -f
 BEGIN {
-    print "timestamp, pcpu, pmem, rss, vsz, majfl"
-    t0 = -1
+    print "timestamp, pcpu, pmem, rss, vsz, majfl";
+    t0 = -1;
 }
 { 
     if ( $1 == "PROF_BEGIN" ) { 
         if ( t0 == -1 ) { t0 = $2; }
-        print timestamp-t0, sum1, sum2, sum3, sum4, sum5;
+        else { print timestamp-t0, sum1, sum2, sum3, sum4, sum5; }
         timestamp = $2;
         sum1 = 0;
         sum2 = 0;
