@@ -1,10 +1,19 @@
 #!/bin/bash
+#SBATCH --job-name="bbbblast"
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=24
+#SBATCH --time=4:00:00
+#SBATCH --partition=ccm_queue
+#SBATCH --output=jobscript-sbatch.out
+#SBATCH --error=jobscript-sbatch.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=glock@lbl.gov
 #PBS -N bbbblast
 #PBS -l mppwidth=24
-#PBS -l walltime=08:00:00
+#PBS -l walltime=04:00:00
 #PBS -q debug
-#PBS -o jobscript.out
-#PBS -e jobscript.err
+#PBS -o jobscript-pbs.out
+#PBS -e jobscript-pbs.err
 #
 #  Environment variables for configuring behavior:
 #     NO_STAGE=1 to run BLAST against the location specified by DB_DIR variable
@@ -18,7 +27,7 @@ NO_STAGE=1
 NO_DF=1
 NO_FILEHANDLES=1
 
-PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/run.ccmwrap.6"
+PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/run.ccmwrap.11"
 
 #
 #  Special stuff just for running at NERSC
@@ -223,6 +232,7 @@ fi
 if [ ! $NO_PROFILE ]; then
     startmon &
     monpid=$!
+    sleep 5
 fi
 
 #
