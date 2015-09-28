@@ -10,8 +10,8 @@
 #SBATCH --mail-user=glock@lbl.gov
 #PBS -N bbbblast
 #PBS -l mppwidth=24
-#PBS -l walltime=04:00:00
-#PBS -q debug
+#PBS -l walltime=06:00:00
+#PBS -q ccm_queue
 #PBS -o jobscript-pbs.out
 #PBS -e jobscript-pbs.err
 #
@@ -74,7 +74,8 @@ fi
 DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dustmasked.04 nt_dustmasked.05 nt_dustmasked.06 nt_dustmasked.07 nt_dustmasked.08 nt_dustmasked.09 nt_dustmasked.10 nt_dustmasked.11 nt_dustmasked.12 nt_dustmasked.13"
 
 ### Seconds before dropping profile output
-PROFILE_INTERVAL=1
+### periodic gstack dumping
+PROFILE_INTERVAL=5
 
 #
 #  Location of various binaries
@@ -82,6 +83,7 @@ PROFILE_INTERVAL=1
 TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
 BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
 BLASTN="/global/homes/g/glock/apps.edison/blast/ncbi-blast-2.2.31+/bin/blastn"
+APP_PGREP="blastn"
 IS_FILE_IN_PAGE_CACHE="/global/u2/g/glock/bin/is_file_in_page_cache"
 DROP_FILE_FROM_PAGE_CACHE="/global/u2/g/glock/bin/drop_file_from_page_cache"
 
@@ -109,7 +111,11 @@ mkdir -p $PROFILE_OUTPUT_DIR
 #  Functions to generate profiling data
 #
 drop_begin() {
-    echo "PROF_BEGIN $(date +%s)"
+    if [ -z "$1" ]; then
+        echo "PROF_BEGIN $1"
+    else
+        echo "PROF_BEGIN $(date +%s)"
+    fi
 }
 startmon() { 
     echo "$(date) - Starting IO profile..."
@@ -119,7 +125,7 @@ startmon() {
         iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
     fi
 
-    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt prof_meminfo.txt
+    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt prof_meminfo.txt prof_gstack.txt
     do
         if [ -e $PROFILE_OUTPUT_DIR/$profile_output ]; then
             rm $PROFILE_OUTPUT_DIR/$profile_output
@@ -139,34 +145,47 @@ startmon() {
 
     while [ 1 ]
     do 
+        # One timestamp for each record to ensure all profile outputs' columns
+        # can be pasted together and remain in-phase
+        timestamp=$(date +%s)
+
         # save record of ssd capacity
         if [ -z "$NO_DF" ]; then
-            drop_begin >> $PROFILE_OUTPUT_DIR/prof_df.txt
+            drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_df.txt
             df -k >> $PROFILE_OUTPUT_DIR/prof_df.txt
         fi
 
         # save record of running processes
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_ps.txt
+        drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_ps.txt
         ps -U $USER -o pid,ppid,lwp,nlwp,etime,pcpu,pmem,rss,vsz,maj_flt,min_flt,state,cmd -www >> $PROFILE_OUTPUT_DIR/prof_ps.txt
 
         # save record of open file handles
         if [ -z "$NO_FILEHANDLES" ]; then
-            drop_begin >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
+            drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
             cat /proc/sys/fs/file-nr >> $PROFILE_OUTPUT_DIR/prof_filehandles.txt
         fi
 
         # save record of virtual memory state
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
+        drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
         cat /proc/vmstat >> $PROFILE_OUTPUT_DIR/prof_vmstat.txt
 
         # save record of memory
-        drop_begin >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
+        drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
         cat /proc/meminfo >> $PROFILE_OUTPUT_DIR/prof_meminfo.txt
  
         # only attempt to drop Lustre stats if the fs is mounted
         if [ ! -z "$LUSTRE_PROC_STATS" ]; then
-            drop_begin >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
             cat $LUSTRE_PROC_STATS ${LUSTRE_PROC_STATS%stats}statahead_stats ${LUSTRE_PROC_STATS%stats}read_ahead_stats >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+        fi
+
+        # only probe the process stack if we are doing coarse-grained profiling
+        if [ ${PROFILE_INTERVAL} -ge 5 ]; then
+            my_pid=$(pgrep $APP_PGREP | head -n1)
+            if [ ! -z "$my_pid" ]; then
+                drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_gstack.txt
+                gstack $my_pid 2>&1 >> $PROFILE_OUTPUT_DIR/prof_gstack.txt
+            fi
         fi
 
         sleep ${PROFILE_INTERVAL}s
