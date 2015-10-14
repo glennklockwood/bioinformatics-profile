@@ -1,19 +1,4 @@
 #!/bin/bash
-#SBATCH --job-name="bbbblast"
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=24
-#SBATCH --time=4:00:00
-#SBATCH --partition=ccm_queue
-#SBATCH --output=jobscript-sbatch.out
-#SBATCH --error=jobscript-sbatch.err
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=glock@lbl.gov
-#PBS -N bbbblast
-#PBS -l mppwidth=24
-#PBS -l walltime=06:00:00
-#PBS -q ccm_queue
-#PBS -o jobscript-pbs.out
-#PBS -e jobscript-pbs.err
 #
 #  Environment variables for configuring behavior:
 #     NO_STAGE=1 to run BLAST against the location specified by DB_DIR variable
@@ -27,7 +12,7 @@ NO_STAGE=1
 NO_DF=1
 NO_FILEHANDLES=1
 
-PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/run.ccmwrap.11"
+PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/profile.21"
 
 #
 #  Special stuff just for running at NERSC
@@ -40,7 +25,7 @@ PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/run.ccmwrap.11"
 #    LUSTRE_FS - the Lustre fs name (e.g., snx11025) to be used for profiling;
 #      look in /proc/fs/lustre/llite to see options
 #
-PATH_SET="gpfs"
+PATH_SET="gpfs-native"
 if [ "$PATH_SET" == "lustre" ]; then
     INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
     DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
@@ -51,6 +36,12 @@ elif [ "$PATH_SET" == "gpfs" ]; then
     INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
     DB_DIR="/global/scratch2/sd/glock/blast.db"
     SCRATCH_DIR="/global/scratch2/sd/glock/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS=""
+elif [ "$PATH_SET" == "gpfs-native" ]; then
+    INPUT="/global/projectb/scratch/glock/blast.input/contigs.fa"
+    DB_DIR="/global/projectb/scratch/glock/blast.db"
+    SCRATCH_DIR="/global/projectb/scratch/glock/scratch"
     SCRATCH_DEV=""
     LUSTRE_FS=""
 elif [ "$PATH_SET" == "bb" ]; then
@@ -75,7 +66,7 @@ DBS="nt_dustmasked.00 nt_dustmasked.01 nt_dustmasked.02 nt_dustmasked.03 nt_dust
 
 ### Seconds before dropping profile output
 ### periodic gstack dumping
-PROFILE_INTERVAL=5
+PROFILE_INTERVAL=1
 
 #
 #  Location of various binaries
