@@ -12,7 +12,7 @@ NO_STAGE=1
 NO_DF=1
 NO_FILEHANDLES=1
 
-PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/profile.21"
+PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/profile.36"
 
 #
 #  Special stuff just for running at NERSC
@@ -27,24 +27,39 @@ PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/profile.21"
 #
 PATH_SET="gpfs-native"
 if [ "$PATH_SET" == "lustre" ]; then
-    INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
+    INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs-quarter.fa"
     DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
     SCRATCH_DIR="/scratch1/scratchdirs/glock/blast/scratch"
     SCRATCH_DEV=""
-    LUSTRE_FS="snx11025"
+#   LUSTRE_FS="snx11039"  #alva
+    LUSTRE_FS="snx11025"  #edison
 elif [ "$PATH_SET" == "gpfs" ]; then
     INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
     DB_DIR="/global/scratch2/sd/glock/blast.db"
     SCRATCH_DIR="/global/scratch2/sd/glock/scratch"
     SCRATCH_DEV=""
     LUSTRE_FS=""
+elif [ "$PATH_SET" == "custom" ]; then
+    INPUT="/scratch1/scratchdirs/glock/blast/job026/contigs-quarter.fa"
+    DB_DIR="/global/projectb/scratch/glock/blast.db"
+    SCRATCH_DIR="/scratch1/scratchdirs/glock/blast/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS=""
 elif [ "$PATH_SET" == "gpfs-native" ]; then
-    INPUT="/global/projectb/scratch/glock/blast.input/contigs.fa"
+    INPUT="/global/projectb/scratch/glock/blast.input/contigs-quarter.fa"
     DB_DIR="/global/projectb/scratch/glock/blast.db"
     SCRATCH_DIR="/global/projectb/scratch/glock/scratch"
     SCRATCH_DEV=""
     LUSTRE_FS=""
+elif [ "$PATH_SET" == "dw" ]; then
+    # datawarp phase 1
+    INPUT="$DW_JOB_STRIPED/contigs.fa"
+    DB_DIR="$DW_JOB_STRIPED/blast.db"
+    SCRATCH_DIR="$DW_JOB_STRIPED/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS=""
 elif [ "$PATH_SET" == "bb" ]; then
+    # datawarp phase 0
     INPUT="/flash/scratch2/glock/blast.input/contigs.fa"
     DB_DIR="/flash/scratch2/glock/blast.db"
     SCRATCH_DIR="/flash/scratch2/glock/scratch"
@@ -73,8 +88,8 @@ PROFILE_INTERVAL=1
 #
 TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
 BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
-BLASTN="/global/homes/g/glock/apps.edison/blast/ncbi-blast-2.2.31+/bin/blastn"
-APP_PGREP="blastn"
+BINARY="/scratch1/scratchdirs/glock/blast/job036/blastn"
+APP_PGREP="$(basename $BINARY)"
 IS_FILE_IN_PAGE_CACHE="/global/u2/g/glock/bin/is_file_in_page_cache"
 DROP_FILE_FROM_PAGE_CACHE="/global/u2/g/glock/bin/drop_file_from_page_cache"
 
@@ -116,7 +131,7 @@ startmon() {
         iostat -dkt $PROFILE_INTERVAL $SCRATCH_DEV >> $PROFILE_OUTPUT_DIR/prof_iostat.txt &
     fi
 
-    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt prof_meminfo.txt prof_gstack.txt
+    for profile_output in prof_df.txt prof_ps.txt prof_filehandles.txt prof_vmstat.txt prof_lustre.txt prof_meminfo.txt prof_gstack.txt prof_lcache.txt
     do
         if [ -e $PROFILE_OUTPUT_DIR/$profile_output ]; then
             rm $PROFILE_OUTPUT_DIR/$profile_output
@@ -168,6 +183,8 @@ startmon() {
         if [ ! -z "$LUSTRE_PROC_STATS" ]; then
             drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
             cat $LUSTRE_PROC_STATS ${LUSTRE_PROC_STATS%stats}statahead_stats ${LUSTRE_PROC_STATS%stats}read_ahead_stats >> $PROFILE_OUTPUT_DIR/prof_lustre.txt
+            drop_begin $timestamp >> $PROFILE_OUTPUT_DIR/prof_lcache.txt
+            cat ${LUSTRE_PROC_STATS%stats}max_cached_mb >> $PROFILE_OUTPUT_DIR/prof_lcache.txt
         fi
 
         # only probe the process stack if we are doing coarse-grained profiling
@@ -232,9 +249,18 @@ if [ ! $NO_STAGE -a -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACH
         echo -n "$(date) - "
         $IS_FILE_IN_PAGE_CACHE $i
     done
-    ### Let dirty pages and stuff flush out
-    sleep 300
+elif [ -f "$IS_FILE_IN_PAGE_CACHE" -a -f "$DROP_FILE_FROM_PAGE_CACHE" ]; then
+    for i in ${DB_DIR}/*; do
+        echo -n "$(date) - "
+        $IS_FILE_IN_PAGE_CACHE $i
+        echo "$(date) - Dropping $i from cache"
+        $DROP_FILE_FROM_PAGE_CACHE $i
+        echo -n "$(date) - "
+        $IS_FILE_IN_PAGE_CACHE $i
+    done
 fi
+### Let dirty pages and stuff flush out
+sleep 10
 
 #
 #  Start profiling
@@ -250,7 +276,8 @@ fi
 #
 echo "$(date) - Running command"
 set -x
-$APWRAP $BLASTN \
+export BATCH_SIZE=4999000
+$APWRAP $BINARY \
     -num_threads $THREADS \
     -evalue 1e-30 \
     -perc_identity 90 \
@@ -258,13 +285,13 @@ $APWRAP $BLASTN \
     -task megablast \
     -outfmt 0 \
     -query $INPUT \
-    -db ${DB_DIR}/testdb > $SCRATCH_DIR/$OUTPUT_FILE 2> $SCRATCH_DIR/${OUTPUT_FILE%out}err
+    -db ${DB_DIR}/testdb > $SCRATCH_DIR/${OUTPUT_FILE} 2> $SCRATCH_DIR/${OUTPUT_FILE%out}err
 set +x
 echo "$(date) - Finished running command"
 
 if [ ! $NO_PROFILE ]; then
     ### Let one last ps/df fire before shutting everything down
-    sleep 90
+    sleep 30
     kill $monpid
 fi
 
@@ -279,5 +306,3 @@ echo "$(date) - Finished moving output data off of local disk"
 echo "$(date) - Removing $SCRATCH_DIR"
 rm -rf $SCRATCH_DIR
 echo "$(date) - Done cleaning up $SCRATCH_DIR"
-
-
