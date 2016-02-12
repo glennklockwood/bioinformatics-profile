@@ -12,7 +12,8 @@ NO_STAGE=1
 NO_DF=1
 NO_FILEHANDLES=1
 
-PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/profile.47"
+# use Lustre so dvs ipc counters don't get poisoned by the profile
+PROFILE_OUTPUT_DIR="/global/cscratch1/sd/glock/profile.47" 
 
 #
 #  Special stuff just for running at NERSC
@@ -26,54 +27,35 @@ PROFILE_OUTPUT_DIR="/global/u2/g/glock/blast/profile.47"
 #      look in /proc/fs/lustre/llite to see options
 #
 PATH_SET="dw"
-if [ "$PATH_SET" == "lustre" ]; then
-    INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs-quarter.fa"
+
+if [ "$PATH_SET" == "lustre-cori" ]; then
+    INPUT="/global/cscratch1/sd/glock/blast/blast.input/contigs.fa"
+    DB_DIR="/global/cscratch1/sd/glock/blast/blast.db"
+    SCRATCH_DIR="/global/cscratch1/sd/glock/blast/scratch"
+    SCRATCH_DEV=""
+    LUSTRE_FS="snx11168"  # cori
+elif [ "$PATH_SET" == "lustre-edison" ]; then
+    INPUT="/scratch1/scratchdirs/glock/blast/blast.input/contigs.fa"
     DB_DIR="/scratch1/scratchdirs/glock/blast/blast.db"
     SCRATCH_DIR="/scratch1/scratchdirs/glock/blast/scratch"
     SCRATCH_DEV=""
-#   LUSTRE_FS="snx11039"  #alva
-    LUSTRE_FS="snx11025"  #edison
-elif [ "$PATH_SET" == "gpfs" ]; then
-    INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
-    DB_DIR="/global/scratch2/sd/glock/blast.db"
-    SCRATCH_DIR="/global/scratch2/sd/glock/scratch"
-    SCRATCH_DEV=""
-    LUSTRE_FS=""
-elif [ "$PATH_SET" == "custom" ]; then
-    INPUT="/scratch1/scratchdirs/glock/blast/job026/contigs-quarter.fa"
+    LUSTRE_FS="snx11025"  # edison
+elif [ "$PATH_SET" == "gpfs-cori" ]; then
+    INPUT="/global/projectb/scratch/glock/blast.input/contigs.fa"
     DB_DIR="/global/projectb/scratch/glock/blast.db"
-    SCRATCH_DIR="/scratch1/scratchdirs/glock/blast/scratch"
-    SCRATCH_DEV=""
-    LUSTRE_FS=""
-elif [ "$PATH_SET" == "gpfs-native" ]; then
-    INPUT="/global/projectb/scratch/glock/blast.input/contigs-quarter.fa"
-    DB_DIR="/global/projectb/scratch/glock/blast.db"
-    SCRATCH_DIR="/global/projectb/scratch/glock/scratch"
-    SCRATCH_DEV=""
-    LUSTRE_FS=""
+    SCRATCH_DIR="/global/projectb/scratch/glock/blast.db/scratch"
+    DVS_FS="/global/projectb"
 elif [ "$PATH_SET" == "dw" ]; then
-    # datawarp phase 1
     INPUT="/global/cscratch1/sd/glock/blast/blast.input/contigs.fa"
     DB_DIR="$DW_JOB_STRIPED/blast.db"
     SCRATCH_DIR="$DW_JOB_STRIPED/scratch"
     SCRATCH_DEV=""
-    LUSTRE_FS=""
-    # Set to a greppable root of the DVS mount point for DataWarp.  Setting this
-    # also assumes that stage_in is used to populate $DB_DIR.
     DVS_FS="/var/opt/cray/dws/mounts/registrations"
-elif [ "$PATH_SET" == "bb" ]; then
-    # datawarp phase 0
-    INPUT="/flash/scratch2/glock/blast.input/contigs.fa"
-    DB_DIR="/flash/scratch2/glock/blast.db"
-    SCRATCH_DIR="/flash/scratch2/glock/scratch"
-    SCRATCH_DEV=""
-    LUSTRE_FS=""
 elif [ "$PATH_SET" == "local" ]; then
     INPUT="/global/scratch2/sd/glock/blast.input/contigs.fa"
     DB_DIR="/global/scratch2/sd/glock/blast.db"
     SCRATCH_DEV="/dev/dm-0"
     SCRATCH_DIR="/local/tmp/$USER"
-    LUSTRE_FS=""
 else
     echo "Unknown PATH_SET=$PATH_SET; aborting" >&2
     exit 1
@@ -91,8 +73,6 @@ PROFILE_INTERVAL=1
 #
 TIME="/global/u2/g/glock/apps.carver/time/bin/time -v"
 BONNIE="/global/u2/g/glock/apps.carver/bonnie++/sbin/bonnie++"
-# BINARY="/scratch1/scratchdirs/glock/blast/job039/blastn" #same as job038
-# BINARY="/global/cscratch1/sd/glock/src/ncbi-blast-2.2.31+-src/c++/ReleaseMT/bin/blastn"
 BINARY="/global/cscratch1/sd/glock/src/blastn.cori"
 APP_PGREP="$(basename $BINARY)"
 IS_FILE_IN_PAGE_CACHE="/global/u2/g/glock/bin/is_file_in_page_cache"
@@ -102,8 +82,6 @@ OUTPUT_FILE="blastn.out"
 OUTPUT_DIR="${PBS_O_WORKDIR-$PWD}"
 
 THREADS="${PBS_NP-24}"
-APWRAP="strace -T -ttt -o $OUTPUT_DIR/strace.out"       # when running on cluster
-APWRAP="aprun -n1 -N1 -d $THREADS"                      # for running on Cray
 APWRAP=""
 
 clean_profile_dir() {
@@ -232,9 +210,9 @@ startmon() {
 }
 
 stage_in() {
-#
-#  Stage in input data and create database alias file
-#
+    #
+    #  Stage in input data and create database alias file
+    #
     for dbfile in $*
     do
         echo "$(date) - Staging in $DB_DIR/${dbfile}* ($(du -hcs $DB_DIR/${dbfile}* | tail -n1 | cut -d\t -f1))"
@@ -244,6 +222,9 @@ stage_in() {
 }
 
 generate_nal() {
+    #
+    #  Create the deck that defines database shard file names
+    #
     target_nal=$1
     shift
     echo "$(date) - Creating $target_nal"
@@ -254,17 +235,17 @@ EOF
 }
 
 run_bonnie() {
-    SCRATCH_DIR=$1
     #
     #  Run bonnie++ to scramble the disk cache and get rid of the files we just
     #  copied to $SCRATCH_DIR
     #
-        memtot_mib=$(awk '/MemTotal:/ { print int($2/1024) + 1 }' /proc/meminfo)
-        echo "$(date) - Running bonnie++ assuming $memtot_mib MB of RAM"
-        set -x
-        $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib 2>&1
-        set +x
-        echo "$(date) - Finished bonnie++"
+    SCRATCH_DIR=$1
+    memtot_mib=$(awk '/MemTotal:/ { print int($2/1024) + 1 }' /proc/meminfo)
+    echo "$(date) - Running bonnie++ assuming $memtot_mib MB of RAM"
+    set -x
+    $TIME $BONNIE -d $SCRATCH_DIR -m $NERSC_HOST -r $memtot_mib 2>&1
+    set +x
+    echo "$(date) - Finished bonnie++"
 }
 
 purge_files_from_cache() {
